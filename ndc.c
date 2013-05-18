@@ -37,42 +37,68 @@ static int do_cmd(int sock, int argc, char **argv);
 
 int main(int argc, char **argv) {
     int sock;
+    int cmdOffset = 0;
 
     if (argc < 2)
         usage(argv[0]);
 
-    if ((sock = socket_local_client("netd",
+    // try interpreting the first arg as the socket name - if it fails go back to netd
+
+    if ((sock = socket_local_client(argv[1],
                                      ANDROID_SOCKET_NAMESPACE_RESERVED,
                                      SOCK_STREAM)) < 0) {
-        fprintf(stderr, "Error connecting (%s)\n", strerror(errno));
-        exit(4);
+        if ((sock = socket_local_client("netd",
+                                         ANDROID_SOCKET_NAMESPACE_RESERVED,
+                                         SOCK_STREAM)) < 0) {
+            fprintf(stderr, "Error connecting (%s)\n", strerror(errno));
+            exit(4);
+        }
+    } else {
+        if (argc < 3) usage(argv[0]);
+        printf("Using alt socket %s\n", argv[1]);
+        cmdOffset = 1;
     }
 
-    if (!strcmp(argv[1], "monitor"))
+    if (!strcmp(argv[1+cmdOffset], "monitor"))
         exit(do_monitor(sock, 0));
-    exit(do_cmd(sock, argc, argv));
+    exit(do_cmd(sock, argc-cmdOffset, &(argv[cmdOffset])));
 }
 
 static int do_cmd(int sock, int argc, char **argv) {
-    char final_cmd[255] = { '\0' };
+    char *final_cmd = strdup("0 ");
+    if (final_cmd == NULL) {
+        perror("strdup");
+        return errno;
+    }
+
     int i;
 
     for (i = 1; i < argc; i++) {
+        if (index(argv[i], '"')) {
+            perror("argument with embedded quotes not allowed");
+            free(final_cmd);
+            return 1;
+        }
+        bool needs_quoting = index(argv[i], ' ');
+        const char *format = needs_quoting ? "%s\"%s\"%s" : "%s%s%s";
         char *cmp;
 
-        if (!index(argv[i], ' '))
-            asprintf(&cmp, "%s%s", argv[i], (i == (argc -1)) ? "" : " ");
-        else
-            asprintf(&cmp, "\"%s\"%s", argv[i], (i == (argc -1)) ? "" : " ");
-
-        strcat(final_cmd, cmp);
-        free(cmp);
+        if (asprintf(&cmp, format, final_cmd, argv[i],
+                     (i == (argc -1)) ? "" : " ") < 0) {
+            perror("malloc");
+            free(final_cmd);
+            return errno;
+        }
+        free(final_cmd);
+        final_cmd = cmp;
     }
 
     if (write(sock, final_cmd, strlen(final_cmd) + 1) < 0) {
         perror("write");
+        free(final_cmd);
         return errno;
     }
+    free(final_cmd);
 
     return do_monitor(sock, 1);
 }
@@ -114,7 +140,7 @@ static int do_monitor(int sock, int stop_after_cmd) {
                     return ECONNRESET;
                 return errno;
             }
-            
+
             int offset = 0;
             int i = 0;
 
@@ -142,7 +168,6 @@ static int do_monitor(int sock, int stop_after_cmd) {
 }
 
 static void usage(char *progname) {
-    fprintf(stderr, "Usage: %s <monitor>|<cmd> [arg1] [arg2...]\n", progname);
+    fprintf(stderr, "Usage: %s [sockname] <monitor>|<cmd> [arg1] [arg2...]\n", progname);
     exit(1);
 }
-

@@ -23,17 +23,27 @@
 #include "TetherController.h"
 #include "NatController.h"
 #include "PppController.h"
-#include "PanController.h"
 #include "SoftapController.h"
-#include "UsbController.h"
+#include "BandwidthController.h"
+#include "IdletimerController.h"
+#include "InterfaceController.h"
+#include "ResolverController.h"
+#include "SecondaryTableController.h"
+#include "FirewallController.h"
+#include "ClatdController.h"
 
 class CommandListener : public FrameworkListener {
     static TetherController *sTetherCtrl;
     static NatController *sNatCtrl;
     static PppController *sPppCtrl;
-    static PanController *sPanCtrl;
     static SoftapController *sSoftapCtrl;
-    static UsbController *sUsbCtrl;
+    static BandwidthController *sBandwidthCtrl;
+    static IdletimerController *sIdletimerCtrl;
+    static InterfaceController *sInterfaceCtrl;
+    static ResolverController *sResolverCtrl;
+    static SecondaryTableController *sSecondaryTableCtrl;
+    static FirewallController *sFirewallCtrl;
+    static ClatdController *sClatdCtrl;
 
 public:
     CommandListener();
@@ -41,14 +51,9 @@ public:
 
 private:
 
-    static int readInterfaceCounters(const char *iface, unsigned long *rx, unsigned long *tx);
+    static int writeFile(const char *path, const char *value, int size);
 
-    class UsbCmd : public NetdCommand {
-    public:
-        UsbCmd();
-        virtual ~UsbCmd() {}
-        int runCommand(SocketClient *c, int argc, char ** argv);
-    };
+    static int readInterfaceCounters(const char *iface, unsigned long *rx, unsigned long *tx);
 
     class SoftapCmd : public NetdCommand {
     public:
@@ -99,10 +104,45 @@ private:
         int runCommand(SocketClient *c, int argc, char ** argv);
     };
 
-    class PanCmd : public NetdCommand {
+    class BandwidthControlCmd : public NetdCommand {
     public:
-        PanCmd();
-        virtual ~PanCmd() {}
+        BandwidthControlCmd();
+        virtual ~BandwidthControlCmd() {}
+        int runCommand(SocketClient *c, int argc, char ** argv);
+    protected:
+        void sendGenericOkFail(SocketClient *cli, int cond);
+        void sendGenericOpFailed(SocketClient *cli, const char *errMsg);
+        void sendGenericSyntaxError(SocketClient *cli, const char *usageMsg);
+    };
+
+    class IdletimerControlCmd : public NetdCommand {
+    public:
+        IdletimerControlCmd();
+        virtual ~IdletimerControlCmd() {}
+        int runCommand(SocketClient *c, int argc, char ** argv);
+    };
+
+    class ResolverCmd : public NetdCommand {
+    public:
+        ResolverCmd();
+        virtual ~ResolverCmd() {}
+        int runCommand(SocketClient *c, int argc, char ** argv);
+    };
+
+    class FirewallCmd: public NetdCommand {
+    public:
+        FirewallCmd();
+        virtual ~FirewallCmd() {}
+        int runCommand(SocketClient *c, int argc, char ** argv);
+    protected:
+        int sendGenericOkFail(SocketClient *cli, int cond);
+        static FirewallRule parseRule(const char* arg);
+    };
+
+    class ClatdCmd : public NetdCommand {
+    public:
+        ClatdCmd();
+        virtual ~ClatdCmd() {}
         int runCommand(SocketClient *c, int argc, char ** argv);
     };
 };

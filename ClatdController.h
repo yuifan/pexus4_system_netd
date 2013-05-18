@@ -14,31 +14,19 @@
  * limitations under the License.
  */
 
-#ifndef _PPP_CONTROLLER_H
-#define _PPP_CONTROLLER_H
+#ifndef _CLATD_CONTROLLER_H
+#define _CLATD_CONTROLLER_H
 
-#include <linux/in.h>
-
-#include "List.h"
-
-typedef android::netd::List<char *> TtyCollection;
-
-class PppController {
-    TtyCollection *mTtys;
-    pid_t          mPid; // TODO: Add support for > 1 pppd instance
+class ClatdController {
+    pid_t mClatdPid;
 
 public:
-    PppController();
-    virtual ~PppController();
+    ClatdController();
+    virtual ~ClatdController();
 
-    int attachPppd(const char *tty, struct in_addr local,
-                   struct in_addr remote, struct in_addr dns1,
-                   struct in_addr dns2);
-    int detachPppd(const char *tty);
-    TtyCollection *getTtyList();
-
-private:
-    int updateTtyList();
+    int startClatd(char *interface);
+    int stopClatd();
+    bool isClatdStarted();
 };
 
 #endif

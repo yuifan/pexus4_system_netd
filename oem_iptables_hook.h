@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2008 The Android Open Source Project
+ * Copyright (C) 2012 The Android Open Source Project
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -14,24 +14,13 @@
  * limitations under the License.
  */
 
-#ifndef _USB_CONTROLLER_H
-#define _USB_CONTROLLER_H
+#ifndef _OEM_IPTABLES_HOOK_H
+#define _OEM_IPTABLES_HOOK_H
 
-#include <linux/in.h>
+#define OEM_IPTABLES_FILTER_OUTPUT "oem_out"
+#define OEM_IPTABLES_FILTER_FORWARD "oem_fwd"
+#define OEM_IPTABLES_NAT_PREROUTING "oem_nat_pre"
 
-
-class UsbController {
-
-public:
-    UsbController();
-    virtual ~UsbController();
-
-    int startRNDIS();
-    int stopRNDIS();
-    bool isRNDISStarted();
-
-private:
-    int enableRNDIS(bool enable);
-};
+void setupOemIptablesHook();
 
 #endif

@@ -17,6 +17,7 @@
 #include <stdlib.h>
 #include <errno.h>
 #include <fcntl.h>
+#include <string.h>
 
 #include <sys/socket.h>
 #include <sys/stat.h>
@@ -32,37 +33,28 @@
 
 
 #include "ThrottleController.h"
+#include "NetdConstants.h"
 
-static char TC_PATH[] = "/system/bin/tc";
-
-extern "C" int logwrap(int argc, const char **argv, int background);
+extern "C" int system_nosh(const char *command);
 extern "C" int ifc_init(void);
 extern "C" int ifc_up(const char *name);
 extern "C" int ifc_down(const char *name);
 
 int ThrottleController::runTcCmd(const char *cmd) {
-    char buffer[255];
+    char *buffer;
+    size_t len = strnlen(cmd, 255);
+    int res;
 
-    strncpy(buffer, cmd, sizeof(buffer)-1);
-
-    const char *args[32];
-    char *next = buffer;
-    char *tmp;
-
-    args[0] = TC_PATH;
-    int i = 1;
-
-    while ((tmp = strsep(&next, " "))) {
-        args[i++] = tmp;
-        if (i == 32) {
-            LOGE("tc argument overflow");
-            errno = E2BIG;
-            return -1;
-        }
+    if (len == 255) {
+        ALOGE("tc command too long");
+        errno = E2BIG;
+        return -1;
     }
-    args[i] = NULL;
 
-    return logwrap(i, args, 0);
+    asprintf(&buffer, "%s %s", TC_PATH, cmd);
+    res = system_nosh(buffer);
+    free(buffer);
+    return res;
 }
 
 int ThrottleController::setInterfaceThrottle(const char *iface, int rxKbps, int txKbps) {
@@ -89,7 +81,7 @@ int ThrottleController::setInterfaceThrottle(const char *iface, int rxKbps, int 
      */
     sprintf(cmd, "qdisc add dev %s root handle 1: htb default 1 r2q 1000", ifn);
     if (runTcCmd(cmd)) {
-        LOGE("Failed to add root qdisc (%s)", strerror(errno));
+        ALOGE("Failed to add root qdisc (%s)", strerror(errno));
         goto fail;
     }
 
@@ -98,7 +90,7 @@ int ThrottleController::setInterfaceThrottle(const char *iface, int rxKbps, int 
      */
     sprintf(cmd, "class add dev %s parent 1: classid 1:1 htb rate %dkbit", ifn, txKbps);
     if (runTcCmd(cmd)) {
-        LOGE("Failed to add egress throttling class (%s)", strerror(errno));
+        ALOGE("Failed to add egress throttling class (%s)", strerror(errno));
         goto fail;
     }
 
@@ -107,7 +99,7 @@ int ThrottleController::setInterfaceThrottle(const char *iface, int rxKbps, int 
      */
     ifc_init();
     if (ifc_up("ifb0")) {
-        LOGE("Failed to up ifb0 (%s)", strerror(errno));
+        ALOGE("Failed to up ifb0 (%s)", strerror(errno));
         goto fail;
     }
 
@@ -116,7 +108,7 @@ int ThrottleController::setInterfaceThrottle(const char *iface, int rxKbps, int 
      */
     sprintf(cmd, "qdisc add dev ifb0 root handle 1: htb default 1 r2q 1000");
     if (runTcCmd(cmd)) {
-        LOGE("Failed to add root ifb qdisc (%s)", strerror(errno));
+        ALOGE("Failed to add root ifb qdisc (%s)", strerror(errno));
         goto fail;
     }
 
@@ -125,7 +117,7 @@ int ThrottleController::setInterfaceThrottle(const char *iface, int rxKbps, int 
      */
     sprintf(cmd, "class add dev ifb0 parent 1: classid 1:1 htb rate %dkbit", rxKbps);
     if (runTcCmd(cmd)) {
-        LOGE("Failed to add ingress throttling class (%s)", strerror(errno));
+        ALOGE("Failed to add ingress throttling class (%s)", strerror(errno));
         goto fail;
     }
 
@@ -134,7 +126,7 @@ int ThrottleController::setInterfaceThrottle(const char *iface, int rxKbps, int 
      */
     sprintf(cmd, "qdisc add dev %s ingress", ifn);
     if (runTcCmd(cmd)) {
-        LOGE("Failed to add ingress qdisc (%s)", strerror(errno));
+        ALOGE("Failed to add ingress qdisc (%s)", strerror(errno));
         goto fail;
     }
 
@@ -144,7 +136,7 @@ int ThrottleController::setInterfaceThrottle(const char *iface, int rxKbps, int 
     sprintf(cmd, "filter add dev %s parent ffff: protocol ip prio 10 u32 match "
             "u32 0 0 flowid 1:1 action mirred egress redirect dev ifb0", ifn);
     if (runTcCmd(cmd)) {
-        LOGE("Failed to add ifb filter (%s)", strerror(errno));
+        ALOGE("Failed to add ifb filter (%s)", strerror(errno));
         goto fail;
     }
 

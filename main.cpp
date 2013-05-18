@@ -32,21 +32,27 @@
 
 #include "CommandListener.h"
 #include "NetlinkManager.h"
+#include "DnsProxyListener.h"
+#include "MDnsSdListener.h"
 
 static void coldboot(const char *path);
 static void sigchld_handler(int sig);
+static void blockSigpipe();
 
 int main() {
 
     CommandListener *cl;
     NetlinkManager *nm;
+    DnsProxyListener *dpl;
+    MDnsSdListener *mdnsl;
 
-    LOGI("Netd 1.0 starting");
+    ALOGI("Netd 1.0 starting");
 
 //    signal(SIGCHLD, sigchld_handler);
+    blockSigpipe();
 
     if (!(nm = NetlinkManager::Instance())) {
-        LOGE("Unable to create NetlinkManager");
+        ALOGE("Unable to create NetlinkManager");
         exit(1);
     };
 
@@ -55,15 +61,29 @@ int main() {
     nm->setBroadcaster((SocketListener *) cl);
 
     if (nm->start()) {
-        LOGE("Unable to start NetlinkManager (%s)", strerror(errno));
+        ALOGE("Unable to start NetlinkManager (%s)", strerror(errno));
         exit(1);
     }
 
+    // Set local DNS mode, to prevent bionic from proxying
+    // back to this service, recursively.
+    setenv("ANDROID_DNS_MODE", "local", 1);
+    dpl = new DnsProxyListener();
+    if (dpl->startListener()) {
+        ALOGE("Unable to start DnsProxyListener (%s)", strerror(errno));
+        exit(1);
+    }
+
+    mdnsl = new MDnsSdListener();
+    if (mdnsl->startListener()) {
+        ALOGE("Unable to start MDnsSdListener (%s)", strerror(errno));
+        exit(1);
+    }
     /*
      * Now that we're up, we can respond to commands
      */
     if (cl->startListener()) {
-        LOGE("Unable to start CommandListener (%s)", strerror(errno));
+        ALOGE("Unable to start CommandListener (%s)", strerror(errno));
         exit(1);
     }
 
@@ -72,7 +92,7 @@ int main() {
         sleep(1000);
     }
 
-    LOGI("Netd exiting");
+    ALOGI("Netd exiting");
     exit(0);
 }
 
@@ -123,5 +143,15 @@ static void coldboot(const char *path)
 
 static void sigchld_handler(int sig) {
     pid_t pid = wait(NULL);
-    LOGD("Child process %d exited", pid);
+    ALOGD("Child process %d exited", pid);
+}
+
+static void blockSigpipe()
+{
+    sigset_t mask;
+
+    sigemptyset(&mask);
+    sigaddset(&mask, SIGPIPE);
+    if (sigprocmask(SIG_BLOCK, &mask, NULL) != 0)
+        ALOGW("WARNING: SIGPIPE not blocked\n");
 }

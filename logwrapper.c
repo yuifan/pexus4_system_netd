@@ -43,7 +43,7 @@ int parent(const char *tag, int parent_read) {
             } else if (buffer[b] == '\n') {
                 buffer[b] = '\0';
 
-                LOG(LOG_INFO, tag, "%s", &buffer[a]);
+                ALOG(LOG_INFO, tag, "%s", &buffer[a]);
                 a = b + 1;
             }
         }
@@ -51,7 +51,7 @@ int parent(const char *tag, int parent_read) {
         if (a == 0 && b == sizeof(buffer) - 1) {
             // buffer is full, flush
             buffer[b] = '\0';
-            LOG(LOG_INFO, tag, "%s", &buffer[a]);
+            ALOG(LOG_INFO, tag, "%s", &buffer[a]);
             b = 0;
         } else if (a != b) {
             // Keep left-overs
@@ -67,24 +67,24 @@ int parent(const char *tag, int parent_read) {
     // Flush remaining data
     if (a != b) {
         buffer[b] = '\0';
-        LOG(LOG_INFO, tag, "%s", &buffer[a]);
+        ALOG(LOG_INFO, tag, "%s", &buffer[a]);
     }
     status = 0xAAAA;
     if (wait(&status) != -1) {  // Wait for child
         if (WIFEXITED(status)) {
             if (WEXITSTATUS(status) != 0) {
-                LOG(LOG_INFO, "logwrapper", "%s terminated by exit(%d)", tag,
+                ALOG(LOG_INFO, "logwrapper", "%s terminated by exit(%d)", tag,
                         WEXITSTATUS(status));
             }
             return WEXITSTATUS(status);
         } else if (WIFSIGNALED(status))
-            LOG(LOG_INFO, "logwrapper", "%s terminated by signal %d", tag,
+            ALOG(LOG_INFO, "logwrapper", "%s terminated by signal %d", tag,
                     WTERMSIG(status));
         else if (WIFSTOPPED(status))
-            LOG(LOG_INFO, "logwrapper", "%s stopped by signal %d", tag,
+            ALOG(LOG_INFO, "logwrapper", "%s stopped by signal %d", tag,
                     WSTOPSIG(status));
     } else
-        LOG(LOG_INFO, "logwrapper", "%s wait() failed: %s (%d)", tag,
+        ALOG(LOG_INFO, "logwrapper", "%s wait() failed: %s (%d)", tag,
                 strerror(errno), errno);
     return -EAGAIN;
 }
@@ -97,13 +97,13 @@ void child(int argc, const char**argv) {
 
     // XXX: PROTECT FROM VIKING KILLER
     if (execv(argv_child[0], argv_child)) {
-        LOG(LOG_ERROR, "logwrapper",
+        ALOG(LOG_ERROR, "logwrapper",
             "executing %s failed: %s", argv_child[0], strerror(errno));
     }
     _exit(1);
 }
 
-int logwrap(int argc, const char* argv[], int background)
+int logwrap(int argc, const char* argv[])
 {
     pid_t pid;
 
@@ -114,21 +114,21 @@ int logwrap(int argc, const char* argv[], int background)
     /* Use ptty instead of socketpair so that STDOUT is not buffered */
     parent_ptty = open("/dev/ptmx", O_RDWR);
     if (parent_ptty < 0) {
-	LOG(LOG_ERROR, "logwrapper", "Cannot create parent ptty");
-	return -errno;
+        ALOG(LOG_ERROR, "logwrapper", "Cannot create parent ptty");
+        return -errno;
     }
 
     if (grantpt(parent_ptty) || unlockpt(parent_ptty) ||
             ptsname_r(parent_ptty, child_devname, sizeof(child_devname))) {
         close(parent_ptty);
-	LOG(LOG_ERROR, "logwrapper", "Problem with /dev/ptmx");
-	return -1;
+        ALOG(LOG_ERROR, "logwrapper", "Problem with /dev/ptmx");
+        return -1;
     }
 
     pid = fork();
     if (pid < 0) {
         close(parent_ptty);
-	LOG(LOG_ERROR, "logwrapper", "Failed to fork");
+        ALOG(LOG_ERROR, "logwrapper", "Failed to fork");
         return -errno;
     } else if (pid == 0) {
         /*
@@ -137,7 +137,7 @@ int logwrap(int argc, const char* argv[], int background)
         child_ptty = open(child_devname, O_RDWR);
         if (child_ptty < 0) {
             close(parent_ptty);
-	    LOG(LOG_ERROR, "logwrapper", "Problem with child ptty");
+            ALOG(LOG_ERROR, "logwrapper", "Problem with child ptty");
             _exit(errno < 128 ? errno : 1);  // XXX lame
         }
 
@@ -146,22 +146,6 @@ int logwrap(int argc, const char* argv[], int background)
         dup2(child_ptty, 1);
         dup2(child_ptty, 2);
         close(child_ptty);
-
-        if (background) {
-            int fd = open("/dev/cpuctl/bg_non_interactive/tasks", O_WRONLY);
-            if (fd >= 0) {
-                char text[64];
-                sprintf(text, "%d", getpid());
-                if (write(fd, text, strlen(text)) < 0) {
-                    LOG(LOG_WARN, "logwrapper",
-                        "Unable to background process (%s)", strerror(errno));
-                }
-                close(fd);
-            } else {
-                LOG(LOG_WARN, "logwrapper",
-                    "Unable to background process (%s)", strerror(errno));
-            }
-        }
 
         child(argc, argv);
     } else {
@@ -174,4 +158,73 @@ int logwrap(int argc, const char* argv[], int background)
     }
 
     return 0;
+}
+
+int fork_and_execve(const char*, char*[]);
+
+/*
+ * The following is based off of bionic/libc/unistd/system.c with
+ *  modifications to avoid calling /system/bin/sh -c
+ */
+int system_nosh(const char *command)
+{
+    char buffer[255];
+    char *argp[32];
+    char *next = buffer;
+    char *tmp;
+    int i = 0;
+
+    if (!command)           /* just checking... */
+        return(1);
+
+    /*
+     * The command to argp splitting is from code that was
+     * reverted in Change: 11b4e9b2
+     */
+    if (strnlen(command, sizeof(buffer) - 1) == sizeof(buffer) - 1) {
+        ALOGE("command line too long while processing: %s", command);
+        errno = E2BIG;
+        return -1;
+    }
+    strcpy(buffer, command); // Command len is already checked.
+    while ((tmp = strsep(&next, " "))) {
+        argp[i++] = tmp;
+        if (i == 32) {
+            ALOGE("argument overflow while processing: %s", command);
+            errno = E2BIG;
+            return -1;
+        }
+    }
+    argp[i] = NULL;
+
+    return fork_and_execve(argp[0], argp);
+}
+
+extern char **environ;
+int fork_and_execve(const char* filename, char* argv[]) {
+    pid_t pid;
+    sig_t intsave, quitsave;
+    sigset_t mask, omask;
+    int pstat;
+
+    sigemptyset(&mask);
+    sigaddset(&mask, SIGCHLD);
+    sigprocmask(SIG_BLOCK, &mask, &omask);
+    switch (pid = vfork()) {
+    case -1:                        /* error */
+        sigprocmask(SIG_SETMASK, &omask, NULL);
+        return(-1);
+    case 0:                                 /* child */
+        sigprocmask(SIG_SETMASK, &omask, NULL);
+        execve(filename, argv, environ);
+        _exit(127);
+    }
+
+    intsave = (sig_t)  bsd_signal(SIGINT, SIG_IGN);
+    quitsave = (sig_t) bsd_signal(SIGQUIT, SIG_IGN);
+    pid = waitpid(pid, (int *)&pstat, 0);
+    sigprocmask(SIG_SETMASK, &omask, NULL);
+    (void)bsd_signal(SIGINT, intsave);
+    (void)bsd_signal(SIGQUIT, quitsave);
+    return (pid == -1 ? -1 : pstat);
 }

@@ -1,50 +1,46 @@
-BUILD_NETD := false
-ifneq ($(TARGET_SIMULATOR),true)
-    BUILD_NETD := true
-endif
-
-ifeq ($(BUILD_NETD),true)
-
 LOCAL_PATH:= $(call my-dir)
 
 include $(CLEAR_VARS)
 
 LOCAL_SRC_FILES:=                                      \
-                  main.cpp                             \
+                  BandwidthController.cpp              \
+                  ClatdController.cpp                  \
                   CommandListener.cpp                  \
-                  NetdCommand.cpp                      \
-                  NetlinkManager.cpp                   \
-                  NetlinkHandler.cpp                   \
-                  logwrapper.c                         \
-                  TetherController.cpp                 \
+                  DnsProxyListener.cpp                 \
+                  FirewallController.cpp               \
+                  IdletimerController.cpp              \
+                  InterfaceController.cpp              \
+                  MDnsSdListener.cpp                   \
                   NatController.cpp                    \
+                  NetdCommand.cpp                      \
+                  NetdConstants.cpp                    \
+                  NetlinkHandler.cpp                   \
+                  NetlinkManager.cpp                   \
                   PppController.cpp                    \
-                  PanController.cpp                    \
+                  ResolverController.cpp               \
+                  SecondaryTableController.cpp         \
                   SoftapController.cpp                 \
-                  UsbController.cpp                    \
-                  ThrottleController.cpp
+                  TetherController.cpp                 \
+                  ThrottleController.cpp               \
+                  oem_iptables_hook.cpp                \
+                  logwrapper.c                         \
+                  main.cpp                             \
+
 
 LOCAL_MODULE:= netd
 
 LOCAL_C_INCLUDES := $(KERNEL_HEADERS) \
-                    $(LOCAL_PATH)/../bluetooth/bluedroid/include \
-                    $(LOCAL_PATH)/../bluetooth/bluez-clean-headers \
-                    external/openssl/include
+                    external/mdnsresponder/mDNSShared \
+                    external/openssl/include \
+                    external/stlport/stlport \
+                    bionic \
+                    bionic/libc/private \
+                    $(call include-path-for, libhardware_legacy)/hardware_legacy
 
-LOCAL_CFLAGS :=
-ifdef WIFI_DRIVER_FW_STA_PATH
-LOCAL_CFLAGS += -DWIFI_DRIVER_FW_STA_PATH=\"$(WIFI_DRIVER_FW_STA_PATH)\"
-endif
-ifdef WIFI_DRIVER_FW_AP_PATH
-LOCAL_CFLAGS += -DWIFI_DRIVER_FW_AP_PATH=\"$(WIFI_DRIVER_FW_AP_PATH)\"
-endif
+LOCAL_CFLAGS := -Werror=format
 
-LOCAL_SHARED_LIBRARIES := libsysutils libcutils libnetutils libcrypto
-
-ifeq ($(BOARD_HAVE_BLUETOOTH),true)
-  LOCAL_SHARED_LIBRARIES := $(LOCAL_SHARED_LIBRARIES) libbluedroid
-  LOCAL_CFLAGS := $(LOCAL_CFLAGS) -DHAVE_BLUETOOTH
-endif
+LOCAL_SHARED_LIBRARIES := libstlport libsysutils libcutils libnetutils \
+                          libcrypto libhardware_legacy libmdnssd libdl
 
 include $(BUILD_EXECUTABLE)
 
@@ -61,5 +57,3 @@ LOCAL_CFLAGS :=
 LOCAL_SHARED_LIBRARIES := libcutils
 
 include $(BUILD_EXECUTABLE)
-
-endif # ifeq ($(BUILD_NETD,true)

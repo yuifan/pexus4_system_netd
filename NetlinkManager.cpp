@@ -24,6 +24,7 @@
 #include <sys/un.h>
 
 #include <linux/netlink.h>
+#include <linux/rtnetlink.h>
 
 #define LOG_TAG "Netd"
 
@@ -31,6 +32,8 @@
 
 #include "NetlinkManager.h"
 #include "NetlinkHandler.h"
+
+const int NetlinkManager::NFLOG_QUOTA_GROUP = 1;
 
 NetlinkManager *NetlinkManager::sInstance = NULL;
 
@@ -47,7 +50,9 @@ NetlinkManager::NetlinkManager() {
 NetlinkManager::~NetlinkManager() {
 }
 
-int NetlinkManager::start() {
+NetlinkHandler *NetlinkManager::setupSocket(int *sock, int netlinkFamily,
+    int groups, int format) {
+
     struct sockaddr_nl nladdr;
     int sz = 64 * 1024;
     int on = 1;
@@ -55,47 +60,98 @@ int NetlinkManager::start() {
     memset(&nladdr, 0, sizeof(nladdr));
     nladdr.nl_family = AF_NETLINK;
     nladdr.nl_pid = getpid();
-    nladdr.nl_groups = 0xffffffff;
+    nladdr.nl_groups = groups;
 
-    if ((mSock = socket(PF_NETLINK,
-                        SOCK_DGRAM,NETLINK_KOBJECT_UEVENT)) < 0) {
-        LOGE("Unable to create uevent socket: %s", strerror(errno));
-        return -1;
+    if ((*sock = socket(PF_NETLINK, SOCK_DGRAM, netlinkFamily)) < 0) {
+        ALOGE("Unable to create netlink socket: %s", strerror(errno));
+        return NULL;
     }
 
-    if (setsockopt(mSock, SOL_SOCKET, SO_RCVBUFFORCE, &sz, sizeof(sz)) < 0) {
-        LOGE("Unable to set uevent socket SO_RCVBUFFORCE option: %s", strerror(errno));
-        return -1;
+    if (setsockopt(*sock, SOL_SOCKET, SO_RCVBUFFORCE, &sz, sizeof(sz)) < 0) {
+        ALOGE("Unable to set uevent socket SO_RCVBUFFORCE option: %s", strerror(errno));
+        close(*sock);
+        return NULL;
     }
 
-    if (setsockopt(mSock, SOL_SOCKET, SO_PASSCRED, &on, sizeof(on)) < 0) {
+    if (setsockopt(*sock, SOL_SOCKET, SO_PASSCRED, &on, sizeof(on)) < 0) {
         SLOGE("Unable to set uevent socket SO_PASSCRED option: %s", strerror(errno));
+        close(*sock);
+        return NULL;
+    }
+
+    if (bind(*sock, (struct sockaddr *) &nladdr, sizeof(nladdr)) < 0) {
+        ALOGE("Unable to bind netlink socket: %s", strerror(errno));
+        close(*sock);
+        return NULL;
+    }
+
+    NetlinkHandler *handler = new NetlinkHandler(this, *sock, format);
+    if (handler->start()) {
+        ALOGE("Unable to start NetlinkHandler: %s", strerror(errno));
+        close(*sock);
+        return NULL;
+    }
+
+    return handler;
+}
+
+int NetlinkManager::start() {
+    if ((mUeventHandler = setupSocket(&mUeventSock, NETLINK_KOBJECT_UEVENT,
+         0xffffffff, NetlinkListener::NETLINK_FORMAT_ASCII)) == NULL) {
         return -1;
     }
 
-    if (bind(mSock, (struct sockaddr *) &nladdr, sizeof(nladdr)) < 0) {
-        LOGE("Unable to bind uevent socket: %s", strerror(errno));
+    if ((mRouteHandler = setupSocket(&mRouteSock, NETLINK_ROUTE, RTMGRP_LINK,
+         NetlinkListener::NETLINK_FORMAT_BINARY)) == NULL) {
         return -1;
     }
 
-    mHandler = new NetlinkHandler(this, mSock);
-    if (mHandler->start()) {
-        LOGE("Unable to start NetlinkHandler: %s", strerror(errno));
-        return -1;
+    if ((mQuotaHandler = setupSocket(&mQuotaSock, NETLINK_NFLOG,
+        NFLOG_QUOTA_GROUP, NetlinkListener::NETLINK_FORMAT_BINARY)) == NULL) {
+        ALOGE("Unable to open quota2 logging socket");
+        // TODO: return -1 once the emulator gets a new kernel.
     }
+
     return 0;
 }
 
 int NetlinkManager::stop() {
-    if (mHandler->stop()) {
-        LOGE("Unable to stop NetlinkHandler: %s", strerror(errno));
-        return -1;
+    int status = 0;
+
+    if (mUeventHandler->stop()) {
+        ALOGE("Unable to stop uevent NetlinkHandler: %s", strerror(errno));
+        status = -1;
     }
-    delete mHandler;
-    mHandler = NULL;
 
-    close(mSock);
-    mSock = -1;
+    delete mUeventHandler;
+    mUeventHandler = NULL;
 
-    return 0;
+    close(mUeventSock);
+    mUeventSock = -1;
+
+    if (mRouteHandler->stop()) {
+        ALOGE("Unable to stop route NetlinkHandler: %s", strerror(errno));
+        status = -1;
+    }
+
+    delete mRouteHandler;
+    mRouteHandler = NULL;
+
+    close(mRouteSock);
+    mRouteSock = -1;
+
+    if (mQuotaHandler) {
+        if (mQuotaHandler->stop()) {
+            ALOGE("Unable to stop quota NetlinkHandler: %s", strerror(errno));
+            status = -1;
+        }
+
+        delete mQuotaHandler;
+        mQuotaHandler = NULL;
+
+        close(mQuotaSock);
+        mQuotaSock = -1;
+    }
+
+    return status;
 }

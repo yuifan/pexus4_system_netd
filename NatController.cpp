@@ -14,6 +14,8 @@
  * limitations under the License.
  */
 
+// #define LOG_NDEBUG 0
+
 #include <stdlib.h>
 #include <errno.h>
 #include <sys/socket.h>
@@ -21,134 +23,234 @@
 #include <fcntl.h>
 #include <netinet/in.h>
 #include <arpa/inet.h>
+#include <string.h>
+#include <cutils/properties.h>
 
 #define LOG_TAG "NatController"
 #include <cutils/log.h>
 
 #include "NatController.h"
+#include "SecondaryTableController.h"
+#include "NetdConstants.h"
 
-extern "C" int logwrap(int argc, const char **argv, int background);
+extern "C" int system_nosh(const char *command);
 
-static char IPTABLES_PATH[] = "/system/bin/iptables";
+const char* NatController::LOCAL_FORWARD = "natctrl_FORWARD";
+const char* NatController::LOCAL_NAT_POSTROUTING = "natctrl_nat_POSTROUTING";
 
-NatController::NatController() {
-    natCount = 0;
+NatController::NatController(SecondaryTableController *ctrl) {
+    secondaryTableCtrl = ctrl;
 }
 
 NatController::~NatController() {
 }
 
-int NatController::runIptablesCmd(const char *cmd) {
-    char buffer[255];
+int NatController::runCmd(const char *path, const char *cmd) {
+    char *buffer;
+    size_t len = strnlen(cmd, 255);
+    int res;
 
-    strncpy(buffer, cmd, sizeof(buffer)-1);
-
-    const char *args[16];
-    char *next = buffer;
-    char *tmp;
-
-    args[0] = IPTABLES_PATH;
-    args[1] = "--verbose";
-    int i = 2;
-
-    while ((tmp = strsep(&next, " "))) {
-        args[i++] = tmp;
-        if (i == 16) {
-            LOGE("iptables argument overflow");
-            errno = E2BIG;
-            return -1;
-        }
+    if (len == 255) {
+        ALOGE("command too long");
+        errno = E2BIG;
+        return -1;
     }
-    args[i] = NULL;
 
-    return logwrap(i, args, 0);
+    asprintf(&buffer, "%s %s", path, cmd);
+    res = system_nosh(buffer);
+    ALOGV("runCmd() buffer='%s' res=%d", buffer, res);
+    free(buffer);
+    return res;
 }
 
-int NatController::setDefaults() {
-
-    if (runIptablesCmd("-P INPUT ACCEPT"))
-        return -1;
-    if (runIptablesCmd("-F INPUT"))
-        return -1;
-    if (runIptablesCmd("-P OUTPUT ACCEPT"))
-        return -1;
-    if (runIptablesCmd("-F OUTPUT"))
-        return -1;
-    if (runIptablesCmd("-P FORWARD DROP"))
-        return -1;
-    if (runIptablesCmd("-F FORWARD"))
-        return -1;
-    if (runIptablesCmd("-t nat -F"))
-        return -1;
+int NatController::setupIptablesHooks() {
+    setDefaults();
     return 0;
 }
 
-bool NatController::interfaceExists(const char *iface) {
-    // XXX: STOPSHIP - Implement this
+int NatController::setDefaults() {
+    if (runCmd(IPTABLES_PATH, "-F natctrl_FORWARD"))
+        return -1;
+    if (runCmd(IPTABLES_PATH, "-t nat -F natctrl_nat_POSTROUTING"))
+        return -1;
+
+    runCmd(IP_PATH, "rule flush");
+    runCmd(IP_PATH, "-6 rule flush");
+    runCmd(IP_PATH, "rule add from all lookup default prio 32767");
+    runCmd(IP_PATH, "rule add from all lookup main prio 32766");
+    runCmd(IP_PATH, "-6 rule add from all lookup default prio 32767");
+    runCmd(IP_PATH, "-6 rule add from all lookup main prio 32766");
+    runCmd(IP_PATH, "route flush cache");
+
+    natCount = 0;
+
+    return 0;
+}
+
+bool NatController::checkInterface(const char *iface) {
+    if (strlen(iface) > IFNAMSIZ) return false;
     return true;
 }
 
-int NatController::doNatCommands(const char *intIface, const char *extIface, bool add) {
+//  0    1       2       3       4            5
+// nat enable intface extface addrcnt nated-ipaddr/prelength
+int NatController::enableNat(const int argc, char **argv) {
     char cmd[255];
+    int i;
+    int addrCount = atoi(argv[4]);
+    int ret = 0;
+    const char *intIface = argv[2];
+    const char *extIface = argv[3];
+    int tableNumber;
 
-    // handle decrement to 0 case (do reset to defaults) and erroneous dec below 0
-    if (add == false) {
-        if (natCount <= 1) {
-            int ret = setDefaults();
-            if (ret == 0) {
-                natCount=0;
-            }
-            return ret;
-        }
-    }
-
-    if (!interfaceExists(intIface) || !interfaceExists (extIface)) {
-        LOGE("Invalid interface specified");
+    if (!checkInterface(intIface) || !checkInterface(extIface)) {
+        ALOGE("Invalid interface specified");
         errno = ENODEV;
         return -1;
     }
 
-    snprintf(cmd, sizeof(cmd),
-             "-%s FORWARD -i %s -o %s -m state --state ESTABLISHED,RELATED -j ACCEPT",
-             (add ? "A" : "D"),
-             extIface, intIface);
-    if (runIptablesCmd(cmd)) {
+    if (argc < 5 + addrCount) {
+        ALOGE("Missing Argument");
+        errno = EINVAL;
         return -1;
     }
 
-    snprintf(cmd, sizeof(cmd), "-%s FORWARD -i %s -o %s -j ACCEPT", (add ? "A" : "D"),
-            intIface, extIface);
-    if (runIptablesCmd(cmd)) {
-        // unwind what's been done, but don't care about success - what more could we do?
-        snprintf(cmd, sizeof(cmd),
-                 "-%s FORWARD -i %s -o %s -m state --state ESTABLISHED,RELATED -j ACCEPT",
-                 (!add ? "A" : "D"),
-                 extIface, intIface);
+    tableNumber = secondaryTableCtrl->findTableNumber(extIface);
+    if (tableNumber != -1) {
+        for(i = 0; i < addrCount; i++) {
+            ret |= secondaryTableCtrl->modifyFromRule(tableNumber, ADD, argv[5+i]);
+
+            ret |= secondaryTableCtrl->modifyLocalRoute(tableNumber, ADD, intIface, argv[5+i]);
+        }
+        runCmd(IP_PATH, "route flush cache");
+    }
+
+    if (ret != 0 || setForwardRules(true, intIface, extIface) != 0) {
+        if (tableNumber != -1) {
+            for (i = 0; i < addrCount; i++) {
+                secondaryTableCtrl->modifyLocalRoute(tableNumber, DEL, intIface, argv[5+i]);
+
+                secondaryTableCtrl->modifyFromRule(tableNumber, DEL, argv[5+i]);
+            }
+            runCmd(IP_PATH, "route flush cache");
+        }
+        ALOGE("Error setting forward rules");
+        errno = ENODEV;
         return -1;
     }
 
+    /* Always make sure the drop rule is at the end */
+    snprintf(cmd, sizeof(cmd), "-D natctrl_FORWARD -j DROP");
+    runCmd(IPTABLES_PATH, cmd);
+    snprintf(cmd, sizeof(cmd), "-A natctrl_FORWARD -j DROP");
+    runCmd(IPTABLES_PATH, cmd);
+
+
+    natCount++;
     // add this if we are the first added nat
-    if (add && natCount == 0) {
-        snprintf(cmd, sizeof(cmd), "-t nat -A POSTROUTING -o %s -j MASQUERADE", extIface);
-        if (runIptablesCmd(cmd)) {
+    if (natCount == 1) {
+        snprintf(cmd, sizeof(cmd), "-t nat -A natctrl_nat_POSTROUTING -o %s -j MASQUERADE", extIface);
+        if (runCmd(IPTABLES_PATH, cmd)) {
+            ALOGE("Error seting postroute rule: %s", cmd);
             // unwind what's been done, but don't care about success - what more could we do?
-            setDefaults();;
+            for (i = 0; i < addrCount; i++) {
+                secondaryTableCtrl->modifyLocalRoute(tableNumber, DEL, intIface, argv[5+i]);
+
+                secondaryTableCtrl->modifyFromRule(tableNumber, DEL, argv[5+i]);
+            }
+            setDefaults();
             return -1;
         }
     }
 
-    if (add) {
-        natCount++;
-    } else {
-        natCount--;
-    }
     return 0;
 }
 
-int NatController::enableNat(const char *intIface, const char *extIface) {
-    return doNatCommands(intIface, extIface, true);
+int NatController::setForwardRules(bool add, const char *intIface, const char * extIface) {
+    char cmd[255];
+
+    snprintf(cmd, sizeof(cmd),
+             "-%s natctrl_FORWARD -i %s -o %s -m state --state ESTABLISHED,RELATED -j RETURN",
+             (add ? "A" : "D"),
+             extIface, intIface);
+    if (runCmd(IPTABLES_PATH, cmd) && add) {
+        return -1;
+    }
+
+    snprintf(cmd, sizeof(cmd),
+            "-%s natctrl_FORWARD -i %s -o %s -m state --state INVALID -j DROP",
+            (add ? "A" : "D"),
+            intIface, extIface);
+    if (runCmd(IPTABLES_PATH, cmd) && add) {
+        // bail on error, but only if adding
+        snprintf(cmd, sizeof(cmd),
+                "-%s natctrl_FORWARD -i %s -o %s -m state --state ESTABLISHED,RELATED -j RETURN",
+                (!add ? "A" : "D"),
+                extIface, intIface);
+        runCmd(IPTABLES_PATH, cmd);
+        return -1;
+    }
+
+    snprintf(cmd, sizeof(cmd), "-%s natctrl_FORWARD -i %s -o %s -j RETURN", (add ? "A" : "D"),
+            intIface, extIface);
+    if (runCmd(IPTABLES_PATH, cmd) && add) {
+        // unwind what's been done, but don't care about success - what more could we do?
+        snprintf(cmd, sizeof(cmd),
+                "-%s natctrl_FORWARD -i %s -o %s -m state --state INVALID -j DROP",
+                (!add ? "A" : "D"),
+                intIface, extIface);
+        runCmd(IPTABLES_PATH, cmd);
+
+        snprintf(cmd, sizeof(cmd),
+                 "-%s natctrl_FORWARD -i %s -o %s -m state --state ESTABLISHED,RELATED -j RETURN",
+                 (!add ? "A" : "D"),
+                 extIface, intIface);
+        runCmd(IPTABLES_PATH, cmd);
+        return -1;
+    }
+
+    return 0;
 }
 
-int NatController::disableNat(const char *intIface, const char *extIface) {
-    return doNatCommands(intIface, extIface, false);
+// nat disable intface extface
+//  0    1       2       3       4            5
+// nat enable intface extface addrcnt nated-ipaddr/prelength
+int NatController::disableNat(const int argc, char **argv) {
+    char cmd[255];
+    int i;
+    int addrCount = atoi(argv[4]);
+    const char *intIface = argv[2];
+    const char *extIface = argv[3];
+    int tableNumber;
+
+    if (!checkInterface(intIface) || !checkInterface(extIface)) {
+        ALOGE("Invalid interface specified");
+        errno = ENODEV;
+        return -1;
+    }
+
+    if (argc < 5 + addrCount) {
+        ALOGE("Missing Argument");
+        errno = EINVAL;
+        return -1;
+    }
+
+    setForwardRules(false, intIface, extIface);
+
+    tableNumber = secondaryTableCtrl->findTableNumber(extIface);
+    if (tableNumber != -1) {
+        for (i = 0; i < addrCount; i++) {
+            secondaryTableCtrl->modifyLocalRoute(tableNumber, DEL, intIface, argv[5+i]);
+
+            secondaryTableCtrl->modifyFromRule(tableNumber, DEL, argv[5+i]);
+        }
+
+        runCmd(IP_PATH, "route flush cache");
+    }
+
+    if (--natCount <= 0) {
+        // handle decrement to 0 case (do reset to defaults) and erroneous dec below 0
+        setDefaults();
+    }
+    return 0;
 }

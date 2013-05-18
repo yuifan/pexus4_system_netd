@@ -20,6 +20,7 @@
 #include <sysutils/SocketListener.h>
 #include <sysutils/NetlinkListener.h>
 
+
 class NetlinkHandler;
 
 class NetlinkManager {
@@ -28,8 +29,13 @@ private:
 
 private:
     SocketListener       *mBroadcaster;
-    NetlinkHandler       *mHandler;
-    int                  mSock;
+    NetlinkHandler       *mUeventHandler;
+    NetlinkHandler       *mRouteHandler;
+    NetlinkHandler       *mQuotaHandler;
+    NetlinkHandler       *mIfaceIdleTimerHandler;
+    int                  mUeventSock;
+    int                  mRouteSock;
+    int                  mQuotaSock;
 
 public:
     virtual ~NetlinkManager();
@@ -42,7 +48,15 @@ public:
 
     static NetlinkManager *Instance();
 
+    /* This is the nflog group arg that the xt_quota2 neftiler will use. */
+    static const int NFLOG_QUOTA_GROUP;
+
+    /* This is the group that the xt_IDLETIMER netfilter will use. */
+    static const int IDLETIMER_GROUP;
+
 private:
     NetlinkManager();
+    NetlinkHandler* setupSocket(int *sock, int netlinkFamily, int groups,
+        int format);
 };
 #endif

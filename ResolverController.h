@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2008 The Android Open Source Project
+ * Copyright (C) 2011 The Android Open Source Project
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -14,23 +14,22 @@
  * limitations under the License.
  */
 
-#ifndef _PAN_CONTROLLER_H
-#define _PAN_CONTROLLER_H
+#ifndef _RESOLVER_CONTROLLER_H_
+#define _RESOLVER_CONTROLLER_H_
 
+#include <netinet/in.h>
 #include <linux/in.h>
 
-#include <utils/List.h>
-
-class PanController {
-    pid_t mPid;
-
+class ResolverController {
 public:
-    PanController();
-    virtual ~PanController();
+    ResolverController() {};
+    virtual ~ResolverController() {};
 
-    int startPan();
-    int stopPan();
-    bool isPanStarted();
+    int setDefaultInterface(const char* iface);
+    int setInterfaceDnsServers(const char* iface, char** servers, int numservers);
+    int setInterfaceAddress(const char* iface, struct in_addr* addr);
+    int flushDefaultDnsCache();
+    int flushInterfaceDnsCache(const char* iface);
 };
 
-#endif
+#endif /* _RESOLVER_CONTROLLER_H_ */
